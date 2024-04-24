@@ -14,6 +14,7 @@ module proj3_ROB (
 	logic [31:0] ROB_bus_value;
 	logic [2:0] ROB_bus_tag;
 	logic ROB_bus_trigger;
+	logic ROB_exception_flush;
 	
 	// instruction queue
 	// iq signals
@@ -42,13 +43,17 @@ module proj3_ROB (
 	// ROB
 	logic [2:0] next_available;
 	
+	// branch
+	logic du1_branch_instr, du2_branch_instr;
+	
 	dispatch_unit #(1'b1) du1 (.clk(clk), .reset(reset), .iq_read_en(du1_read_en), .instr_in(odd_instr), .result_ready(result_ready),
 										.ADD_avail_IDs(ADD_avail_IDs), .MUL_avail_IDs(MUL_avail_IDs),
 										.dispatch_ready(du1_dispatch_ready), .rd(du1_rat_rd), .rs1(du1_rat_rs1),
 										.rs2(du1_rat_rs2), .multiply(du1_rat_multiply), .renamed_tag(du1_rat_renamed_tag),
 										.multiply_in(du2_du1_multiply), .rd_in(du2_du1_rd), .rs1_in(du2_du1_rs1),
 										.rs2_in(du2_du1_rs2), .multiply_out(du1_du2_multiply), .rd_out(du1_du2_rd),
-										.rs1_out(du1_du2_rs1), .rs2_out(du1_du2_rs2), .RAT_ready(RAT_ready), .next_available(next_available));
+										.rs1_out(du1_du2_rs1), .rs2_out(du1_du2_rs2), .RAT_ready(RAT_ready), .next_available(next_available),
+										.branch_instr(du1_branch_instr));
 	
 	// dispatch unit 2 - gets even instructions
 	logic du2_dispatch_ready;
@@ -61,7 +66,8 @@ module proj3_ROB (
 										.rs2(du2_rat_rs2), .multiply(du2_rat_multiply), .renamed_tag(du2_rat_renamed_tag),
 										.multiply_in(du1_du2_multiply), .rd_in(du1_du2_rd), .rs1_in(du1_du2_rs1),
 										.rs2_in(du1_du2_rs2), .multiply_out(du2_du1_multiply), .rd_out(du2_du1_rd),
-										.rs1_out(du2_du1_rs1), .rs2_out(du2_du1_rs2), .RAT_ready(RAT_ready), .next_available(next_available));
+										.rs1_out(du2_du1_rs1), .rs2_out(du2_du1_rs2), .RAT_ready(RAT_ready), .next_available(next_available),
+										.branch_instr(du2_branch_instr));
 	
 	
 	
@@ -83,6 +89,11 @@ module proj3_ROB (
 	logic RF_new_instr, new_mul_a, new_mul_b;
 	logic [2:0] rd_a, rd_b, src1a, src2a, src1b, src2b;
 	logic src1a_valid, src2a_valid, src1b_valid, src2b_valid;
+	
+	// from RF to Branch FU
+	logic rf_branch;
+	logic [31:0] rf_op1, rf_op2;
+	logic [2:0] rf_branch_tag;
 	
 	register_file RF (.clk(clk), .reset(reset), .dispatch_ready1(du1_dispatch_ready), .dispatch_ready2(du2_dispatch_ready),
 							  .du1_rd(du1_rat_rd), .du1_rs1(du1_rat_rs1), .du1_rs2(du1_rat_rs2), .du1_multiply(du1_rat_multiply),
@@ -106,14 +117,16 @@ module proj3_ROB (
 							  .MUL_src2b_val(MUL_src2b_val), .MUL_src1b_valid(MUL_src1b_valid), .MUL_src2b_valid(MUL_src2b_valid),
 							  .MUL_b_RSID(MUL_b_RSID),
 							  // bus signals
-							  .ROB_bus_trigger(ROB_bus_trigger), .ROB_bus_tag(ROB_bus_tag), .ROB_bus_value(ROB_bus_value),
+							  .ROB_bus_trigger(ROB_bus_trigger), .ROB_exception_flush(ROB_exception_flush), .ROB_bus_tag(ROB_bus_tag), .ROB_bus_value(ROB_bus_value),
 							  // RAT ready
 							  .RAT_ready(RAT_ready),
 							  // outputs to ROB
 							  .RF_new_instr(RF_new_instr), .new_mul_a(new_mul_a), .new_mul_b(new_mul_b), .rd_a(rd_a), .rd_b(rd_b),
 							  .src1a(src1a), .src2a(src2a), .src1b(src1b), .src2b(src2b), .src1a_valid(src1a_valid), .src2a_valid(src2a_valid),
-							  .src1b_valid(src1b_valid), .src2b_valid(src2b_valid)
-							  );
+							  .src1b_valid(src1b_valid), .src2b_valid(src2b_valid),
+							  // signals added for branch functionality
+							  .du1_branch_instr(du1_branch_instr), .du2_branch_instr(du2_branch_instr), .new_branch(rf_branch), 
+							  .branch_op1(rf_op1), .branch_op2(rf_op2), .branch_tag(rf_branch_tag));
 	
 	// adder RS
 	// ADD_RS signals
@@ -130,7 +143,8 @@ module proj3_ROB (
 						  .src1b_valid(ADD_src1b_valid), .src2b_valid(ADD_src2b_valid), .b_RSID(ADD_b_RSID),
 						  // FU logic
 						  .valid_instr(add_valid_instr), .op1(add_op1), .op2(add_op2), .tag_out(add_tag_out), .avail_IDs(ADD_avail_IDs),
-						  .ROB_bus_trigger(ROB_bus_trigger), .ROB_bus_tag(ROB_bus_tag), .ROB_bus_value(ROB_bus_value));
+						  .ROB_bus_trigger(ROB_bus_trigger), .ROB_exception_flush(ROB_exception_flush), .ROB_bus_tag(ROB_bus_tag), 
+						  .ROB_bus_value(ROB_bus_value));
 
 	// multiplier RS
 	// MUL_RS signals
@@ -147,7 +161,8 @@ module proj3_ROB (
 					  .src1b_valid(MUL_src1b_valid), .src2b_valid(MUL_src2b_valid), .b_RSID(MUL_b_RSID),
 					  // FU logic
 					  .valid_instr(mul_valid_instr), .op1(MUL_op1), .op2(MUL_op2), .tag_out(MUL_tag_out), .avail_IDs(MUL_avail_IDs),
-					  .ROB_bus_trigger(ROB_bus_trigger), .ROB_bus_tag(ROB_bus_tag), .ROB_bus_value(ROB_bus_value));
+					  .ROB_bus_trigger(ROB_bus_trigger), .ROB_exception_flush(ROB_exception_flush), .ROB_bus_tag(ROB_bus_tag), 
+					  .ROB_bus_value(ROB_bus_value));
 	
 	// FU to ROB signals
 	logic add_fu_valid, mul_fu_valid;
@@ -162,13 +177,23 @@ module proj3_ROB (
 	multiplier MUL_FU (.clk(clk), .reset(reset), .valid_instr(mul_valid_instr), .op1(MUL_op1), .op2(MUL_op2), .tag(MUL_tag_out),
 					  .mul_ready(mul_ready), .broadcast_val(mul_fu_value), .broadcast_tag(mul_fu_tag), .bus_trigger(mul_fu_valid));
 
+	// from branch FU to ROB signals
+	logic branch_update_rob;
+	logic [2:0] branch_rob_tag;
+	logic mispredict;
+	
+	// branch FU
+	branch_fu BRANCH_FU (.clk(clk), .reset(reset), .new_branch(rf_branch), .op1(rf_op1), .op2(rf_op2), .rob_tag(rf_branch_tag),
+								.update_rob(branch_update_rob), .mispredict(mispredict), .tag_out(branch_rob_tag));
+	
+					  
 	// Reorder Buffer
 	ROB REORDER_BUFF (.clk(clk), .reset(reset), .ADD_FU_valid(add_fu_valid), .ADD_FU_tag(add_fu_tag), .ADD_FU_value(add_fu_value),
 							.MUL_FU_valid(mul_fu_valid), .MUL_FU_tag(mul_fu_tag), .MUL_FU_value(mul_fu_value), .RAT_new_instr(RF_new_instr),
 							.new_mul_a(new_mul_a), .new_mul_b(new_mul_b), .rd_a(rd_a), .rd_b(rd_b), .src1a(src1a), .src2a(src2a),
 							.src1b(src1b), .src2b(src2b), .src1a_valid(src1a_valid), .src2a_valid(src2a_valid), .src1b_valid(src1b_valid),
 							.src2b_valid(src2b_valid), .next_available(next_available), 
-							.ROB_bus_trigger(ROB_bus_trigger), .ROB_bus_tag(ROB_bus_tag), .ROB_bus_value(ROB_bus_value)
-							);
+							.ROB_bus_trigger(ROB_bus_trigger), .ROB_exception_flush(ROB_exception_flush), .ROB_bus_tag(ROB_bus_tag), .ROB_bus_value(ROB_bus_value),
+							.branch_update(branch_update_rob), .branch_mispredict(mispredict), .branch_tag(branch_rob_tag));
 
 endmodule

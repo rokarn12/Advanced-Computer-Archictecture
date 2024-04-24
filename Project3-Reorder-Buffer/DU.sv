@@ -22,6 +22,9 @@ module dispatch_unit #(parameter logic priorityDU = 1'b0) (
 	output logic multiply,
 	output logic [2:0] renamed_tag,
 	
+	// branch-related outputs to RAT
+	output logic branch_instr,
+	
 	// communication between 2 dispatch units
 	// inputs from other DU
 	input logic multiply_in,
@@ -66,25 +69,26 @@ module dispatch_unit #(parameter logic priorityDU = 1'b0) (
 	logic already_dispatched;
 	
 	// read new instruction logic
-	always @(posedge clk) begin
+	always @(negedge clk) begin			// changed to negedge - worked a little bit better
 		if (reset) begin
 			iq_read_en <= 1'b0;
 			in_process <= 1'b0;
 			curr_instr <= 32'b0;
 			//proc_complete <= 1'b1;
-			//already_dispatched <= 1'b0;
+			already_dispatched <= 1'b0;
+			branch_instr <= 1'b0;
 			num_instr <= 3'b0;
 			$display("Dispatch unit in reset");
 		end else if (!in_process) begin
 			//$display("Setting iq_read_en");
-			if (num_instr < 3'b010) begin
+			if (num_instr < 3'b100) begin
 				iq_read_en <= 1'b1; // request a new instruction from the IQ
 				in_process <= 1'b1; // indicate that the DU is processing
 				num_instr <= num_instr + 2;
-				//already_dispatched <= 1'b0;
+				already_dispatched <= 1'b0;
 			end else begin
 				iq_read_en <= 1'b0;
-				//in_process <= 1'b0;
+				in_process <= 1'b0;
 			end
 		end else begin
 			iq_read_en <= 1'b0; // don't read a new instruction
@@ -108,14 +112,23 @@ module dispatch_unit #(parameter logic priorityDU = 1'b0) (
 			// ADD instruction
 			multiply <= 1'b0;
 			multiply_out <= 1'b0;
+			branch_instr <= 1'b0;
 		end else if (curr_instr[6:0] == 7'b0110011 && curr_instr[31:25] == 7'b0000001 && curr_instr[14:12] == 3'b000) begin
 			// MULTIPLY instruction
 			multiply <= 1'b1;
 			multiply_out <= 1'b1;
+			branch_instr <= 1'b0;
+		end else if (curr_instr[6:0] == 7'b1100011 && curr_instr[14:12] == 3'b000) begin
+			// BRANCH instruction
+			//$display("DU: Branch instruction detected in dispatch unit");
+			multiply <= 1'b0;
+			multiply_out <= 1'b0;
+			branch_instr <= 1'b1;		// ONLY PLACE WHERE BRANCH_INSTR = 1
 		end else begin
 			// NOP instruction, stall
 			multiply <= 1'bz;				// multiply == 1'bz means NOP
 			multiply_out <= 1'bz;
+			branch_instr <= 1'b0;
 		end
 	
 	end // end read new instruction logic
@@ -139,7 +152,7 @@ module dispatch_unit #(parameter logic priorityDU = 1'b0) (
 	// ROB renaming
 	// gets whatever the "tail" pointer is pointing at
 	
-	/////////////////////////////	COME BACK HERE
+	//always @(negedge clk) begin
 	
 	// first check the types of instructions for both dispatch units
 	always @(posedge clk) begin
@@ -148,11 +161,29 @@ module dispatch_unit #(parameter logic priorityDU = 1'b0) (
 		if (reset) begin
 			dispatch_ready <= 1'b0;
 			proc_complete <= 1'b0;
+			already_dispatched <= 1'b0;
+		end
 		
+		// branch instruction handling
+		else if (RAT_ready && branch_instr && !already_dispatched) begin
+			// set the new tag
+			if (priorityDU) begin
+				renamed_tag <= next_available;
+			end else begin
+				renamed_tag <= next_available + 3'd1;
+			end
+		
+			dispatch_ready <= 1'b1;
+			proc_complete <= 1'b1;
+			already_dispatched <= 1'b1;
+			
+			//@(posedge clk);
+			//@(posedge clk);
+			
 		end
 		
 		//if (!priorityDU) $display("DU2: this mul: %b	multiply_in: %b", mul, multiply_in);
-		else if (RAT_ready && !already_dispatched) begin
+		else if (RAT_ready && !already_dispatched && !branch_instr) begin
 		
 			// RENAMING LOGIC
 			// dont need to rename to RS ID anymore
@@ -173,111 +204,22 @@ module dispatch_unit #(parameter logic priorityDU = 1'b0) (
 						if (priorityDU) begin
 							renamed_tag <= next_available;
 						end else begin
-							renamed_tag <= next_available + 1;
+							renamed_tag <= next_available + 3'd1;
 						end
 						
 						dispatch_ready <= 1'b1;
 						proc_complete <= 1'b1;
 						already_dispatched <= 1'b1;
 						
-//						// find tag to rename rd
-//						case (ADD_avail_IDs)
-//							
-//							// c and d are available
-//							4'b0011: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b010; // c
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b011; // d
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//								already_dispatched <= 1'b1;
-//							end
-//							
-//							// b and d are available
-//							4'b0101: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b001; // b
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b011; // d
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//								already_dispatched <= 1'b1;
-//							end
-//							
-//							// b and c are available
-//							4'b0110: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b001; // b
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b010; // c
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//								already_dispatched <= 1'b1;
-//							end
-//							
-//							// a and d are available
-//							4'b1001: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b000; // a
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b011; // d
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//								already_dispatched <= 1'b1;
-//							end
-//							
-//							// a and c are available
-//							4'b1010: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b000; // a
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b010; // c
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//								already_dispatched <= 1'b1;
-//							end
-//							
-//							// a and b are available
-//							4'b1100: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b000; // a
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b001; // b
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//								already_dispatched <= 1'b1;
-//							end
-//							
-//							// default
-//							default: begin
-//								renamed_tag <= 3'b0;
-//								dispatch_ready <= 1'b0;
-//								proc_complete <= 1'b0;
-//							end
-//						
-//						endcase // end 2 spots avail case statement
+						//@(posedge clk);
+						//@(posedge clk);
+						
 					
 					end // end add 2 spots avail
 					else begin
+						$display("DU: Waiting for two ADD spots");
+						//@(posedge clk);
+						//@(posedge clk);
 						renamed_tag <= 3'b0;
 						dispatch_ready <= 1'b0; // outputs are NOT sent to RAT
 						proc_complete <= 1'b0;
@@ -293,35 +235,19 @@ module dispatch_unit #(parameter logic priorityDU = 1'b0) (
 						if (priorityDU) begin
 							renamed_tag <= next_available;
 						end else begin
-							renamed_tag <= next_available + 1;
+							renamed_tag <= next_available + 3'd1;
 						end
 						
 						dispatch_ready <= 1'b1;
 						proc_complete <= 1'b1;
 						already_dispatched <= 1'b1;
 						
-//						// no "priority" logic needed, find rename tag
-//						if (priorityDU) $display("This is add, other is mul");
-//						// rename tag for ADD
-//						if (ADD_avail_IDs[3] && !mul) renamed_tag <= 3'b000; // a
-//						else if (ADD_avail_IDs[2] && !mul) renamed_tag <= 3'b001; // b
-//						else if (ADD_avail_IDs[1] && !mul) renamed_tag <= 3'b010; // c
-//						else if (ADD_avail_IDs[0] && !mul) renamed_tag <= 3'b011; // d
-//						
-//						// rename tag for MUL
-//						if (MUL_avail_IDs[3] && mul) renamed_tag <= 3'b100; // x
-//						else if (MUL_avail_IDs[2] && mul) renamed_tag <= 3'b101; // y
-//						else if (MUL_avail_IDs[1] && mul) renamed_tag <= 3'b110; // z
-//						else if (MUL_avail_IDs[0] && mul) renamed_tag <= 3'b111; // k
-//						
-//						//if (priorityDU) $display("DU1: dispatch ready");
-//						//else $display("DU2: dispatch ready");
-//						dispatch_ready <= 1'b1; // outputs are sent to RAT
-//						proc_complete <= 1'b1;
-//						already_dispatched <= 1'b1;
+						//@(posedge clk);
+						//@(posedge clk);
 					
 					end
 					else begin
+						$display("DU: Waiting for 1 ADD and 1 MUL spot");
 						renamed_tag <= 3'b0;
 						dispatch_ready <= 1'b0; // outputs are NOT sent to RAT
 						proc_complete <= 1'b0;
@@ -337,34 +263,19 @@ module dispatch_unit #(parameter logic priorityDU = 1'b0) (
 						if (priorityDU) begin
 							renamed_tag <= next_available;
 						end else begin
-							renamed_tag <= next_available + 1;
+							renamed_tag <= next_available + 3'd1;
 						end
 						
 						dispatch_ready <= 1'b1;
 						proc_complete <= 1'b1;
 						already_dispatched <= 1'b1;
 						
-//						// no "priority" logic needed, find rename tag
-//						if (priorityDU) $display("This is mul, other is add");
-//						// rename tag for ADD
-//						if (ADD_avail_IDs[3] && !mul) renamed_tag <= 3'b000; // a
-//						else if (ADD_avail_IDs[2] && !mul) renamed_tag <= 3'b001; // b
-//						else if (ADD_avail_IDs[1] && !mul) renamed_tag <= 3'b010; // c
-//						else if (ADD_avail_IDs[0] && !mul) renamed_tag <= 3'b011; // d
-//						
-//						// rename tag for MUL
-//						if (MUL_avail_IDs[3] && mul) renamed_tag <= 3'b100; // x
-//						else if (MUL_avail_IDs[2] && mul) renamed_tag <= 3'b101; // y
-//						else if (MUL_avail_IDs[1] && mul) renamed_tag <= 3'b110; // z
-//						else if (MUL_avail_IDs[0] && mul) renamed_tag <= 3'b111; // k
-//						
-//						//if (priorityDU) $display("DU1: dispatch ready");
-//						//else $display("DU2: dispatch ready");
-//						dispatch_ready <= 1'b1; // outputs are sent to RAT
-//						proc_complete <= 1'b1;
-//						already_dispatched <= 1'b1;
+						//@(posedge clk);
+						//@(posedge clk);
+						
 					end
 					else begin
+						$display("DU: Waiting for 1 add and 1 mul spot");
 						renamed_tag <= 3'b0;
 						dispatch_ready <= 1'b0; // outputs are NOT sent to RAT
 						proc_complete <= 1'b0;
@@ -379,100 +290,20 @@ module dispatch_unit #(parameter logic priorityDU = 1'b0) (
 						if (priorityDU) begin
 							renamed_tag <= next_available;
 						end else begin
-							renamed_tag <= next_available + 1;
+							renamed_tag <= next_available + 3'd1;
 						end
 						
 						dispatch_ready <= 1'b1;
 						proc_complete <= 1'b1;
 						already_dispatched <= 1'b1;
 						
-//						// find tag to rename rd
-//						case (MUL_avail_IDs)
-//							
-//							// z and k are available
-//							4'b0011: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b110; // z
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b111; // k
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//								already_dispatched <= 1'b1;
-//							end
-//							
-//							// y and k are available
-//							4'b0101: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b101; // y
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b111; // k
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//							end
-//							
-//							// y and z are available
-//							4'b0110: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b101; // y
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b110; // z
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//							end
-//							
-//							// x and k are available
-//							4'b1001: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b100; // x
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b111; // k
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//							end
-//							
-//							// x and z are available
-//							4'b1010: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b100; // x
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b110; // z
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//							end
-//							
-//							// x and y are available
-//							4'b1100: begin
-//								// if this is the priority DU, it gets the first available spot
-//								if (priorityDU) begin
-//									renamed_tag <= 3'b100; // x
-//								end else begin // if not priority, get the second available spot
-//									renamed_tag <= 3'b101; // y
-//								end
-//								
-//								dispatch_ready <= 1'b1; // outputs are sent to RAT
-//								proc_complete <= 1'b1;
-//							end
-//						
-//						
-//						endcase // end 2 spots avail case statement
+						//@(posedge clk);
+						//@(posedge clk);
+						
 					
 					end // end add 2 spots avail
 					else begin
+						$display("DU: Waiting for two available MUL spots");
 						renamed_tag <= 3'bz;
 						dispatch_ready <= 1'b0; // outputs are NOT sent to RAT
 						proc_complete <= 1'b0;
@@ -503,6 +334,9 @@ module dispatch_unit #(parameter logic priorityDU = 1'b0) (
 	
 		end // end if RAT_ready
 		else begin
+			//$display("DU: Waiting for OVERALL RAT ready: %b		already_dispatched: %b", RAT_ready, already_dispatched);
+			//@(posedge clk);
+			//@(posedge clk);
 			dispatch_ready <= 1'b0;
 			proc_complete <= 1'b0;
 		end

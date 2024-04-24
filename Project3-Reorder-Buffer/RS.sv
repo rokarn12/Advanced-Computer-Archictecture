@@ -30,6 +30,7 @@ module mul_rs (
 	output logic [3:0] avail_IDs, // indicates which ID is available for renaming
 	// input from bus
 	input logic ROB_bus_trigger,
+	input logic ROB_exception_flush,
 	input logic [2:0] ROB_bus_tag,
 	input logic [31:0] ROB_bus_value
 );
@@ -43,6 +44,10 @@ module mul_rs (
 	typedef struct {
 		logic [2:0] ID; // x, y, z, k
 		rs_source src[1:0]; // source 1 and source 2
+		
+		// for ROB stuff - does RS need to store tag of ROB entry?
+		logic [2:0] tag_rob;
+		
 	} rs_line;
 	
 	rs_line res_station[4];
@@ -84,15 +89,92 @@ module mul_rs (
 	assign avail_IDs[0] = !res_station[3].src[0].valid && !res_station[3].src[1].valid &&
 								 res_station[3].src[0].tag === 3'bz && res_station[3].src[1].tag === 3'bz;
 	
+	logic [1:0] a_index, b_index;
+	
 	// pointers to next available entry in RS
 	assign a_index = avail_IDs[3] ? 2'd0 : (avail_IDs[2] ? 2'd1 : (avail_IDs[1] ? 2'd2 : (avail_IDs[0] ? 2'd3 : 2'bz)));
-	assign b_index = a_index + 1;			// does this need its own logic?
+	assign b_index = a_index + 2'd1;			// does this need its own logic?
 
 	// if a new instruction incoming from Register Alias Table
-	always @(posedge clk || ROB_bus_trigger) begin
+	always @(posedge clk) begin
 		// set the valid, tag, and value fields for each source from the instruction
-		
-		if (ROB_bus_trigger) begin
+
+		if (load_two) begin
+			$display("MUL RS: loading 2 instructions from RAT");
+			// load both a and b stuff
+			
+			// get the a_instr ROB entry tag
+			res_station[a_index].tag_rob <= a_RSID;
+			// src1a
+			res_station[a_index].src[0].valid <= src1a_valid;
+			res_station[a_index].src[0].value <= src1a_val;
+			res_station[a_index].src[0].tag <= src1a_tag;
+			// src2a
+			res_station[a_index].src[1].valid <= src2a_valid;
+			res_station[a_index].src[1].value <= src2a_val;
+			res_station[a_index].src[1].tag <= src2a_tag;
+			
+			// get the a_instr ROB entry tag
+			res_station[b_index].tag_rob <= b_RSID;
+			// src1b
+			res_station[b_index].src[0].valid <= src1b_valid;
+			res_station[b_index].src[0].value <= src1b_val;
+			res_station[b_index].src[0].tag <= src1b_tag;
+			// src2b
+			res_station[b_index].src[1].valid <= src2b_valid;
+			res_station[b_index].src[1].value <= src2b_val;
+			res_station[b_index].src[1].tag <= src2b_tag;
+			
+		end else if (load_one) begin
+			$display("MUL RS: loading 1 instruction from RAT");
+			// load only a stuff
+			// get the a_instr ROB entry tag
+			res_station[a_index].tag_rob <= a_RSID;
+			// src1a
+			res_station[a_index].src[0].valid <= src1a_valid;
+			res_station[a_index].src[0].value <= src1a_val;
+			res_station[a_index].src[0].tag <= src1a_tag;
+			// src2a
+			res_station[a_index].src[1].valid <= src2a_valid;
+			res_station[a_index].src[1].value <= src2a_val;
+			res_station[a_index].src[1].tag <= src2a_tag;
+			
+		end // end load_two/load_one
+		else begin
+			//valid_instr <= 1'b0;
+			// check for the next spot in the RS whose sources are both valid
+			for (int i = 0; i < 4; i++) begin
+				if (res_station[i].src[0].valid && res_station[i].src[1].valid && mul_ready) begin
+					$display("MUL RS: sending values to FU for execution: tag: %d	op1: %d	op2: %d", res_station[i].tag_rob, res_station[i].src[0].value, res_station[i].src[1].value);
+					// set outputs for FU to execute
+					tag_out <= res_station[i].tag_rob;
+					op1 <= res_station[i].src[0].value;
+					op2 <= res_station[i].src[1].value;
+					valid_instr <= 1'b1;
+					
+					// clear this entry of the RS
+					res_station[i].src[0].valid = 1'b0;
+					res_station[i].src[1].valid = 1'b0;
+					res_station[i].src[0].tag = 3'bz;
+					res_station[i].src[1].tag = 3'bz;
+					res_station[i].src[0].value = 32'b0;
+					res_station[i].src[1].value = 32'b0;
+					break;
+				end // end if
+				else if (i == 3) begin
+					valid_instr <= 1'b0;
+				
+				end
+			end // end for loop
+		end
+	
+	end // end always @ clk or bus_trigger
+	
+
+	// reading ROB bus logic
+	always @(posedge ROB_bus_trigger) begin
+	
+		if (ROB_bus_trigger && !ROB_exception_flush) begin
 			$display("MUL RS: ROB bus update received");
 			// iterate through each of the 4
 			// check if a source is invalid and tags match
@@ -108,52 +190,12 @@ module mul_rs (
 				end // end ifs
 			end // end for loop
 		end // end if ROB_bus_trigger
-		else if (load_two) begin
-			$display("MUL RS: loading 2 instructions from RAT");
-			// load both a and b stuff
-			// src1a
-			res_station[a_index].src[0].valid <= src1a_valid;
-			res_station[a_index].src[0].value <= src1a_val;
-			res_station[a_index].src[0].tag <= src1a_tag;
-			// src2a
-			res_station[a_index].src[1].valid <= src2a_valid;
-			res_station[a_index].src[1].value <= src2a_val;
-			res_station[a_index].src[1].tag <= src2a_tag;
-			
-			// src1b
-			res_station[b_index].src[0].valid <= src1b_valid;
-			res_station[b_index].src[0].value <= src1b_val;
-			res_station[b_index].src[0].tag <= src1b_tag;
-			// src2b
-			res_station[b_index].src[1].valid <= src2b_valid;
-			res_station[b_index].src[1].value <= src2b_val;
-			res_station[b_index].src[1].tag <= src2b_tag;
-			
-		end else if (load_one) begin
-			$display("MUL RS: loading 1 instruction from RAT");
-			// load only a stuff
-			// src1a
-			res_station[a_index].src[0].valid <= src1a_valid;
-			res_station[a_index].src[0].value <= src1a_val;
-			res_station[a_index].src[0].tag <= src1a_tag;
-			// src2a
-			res_station[a_index].src[1].valid <= src2a_valid;
-			res_station[a_index].src[1].value <= src2a_val;
-			res_station[a_index].src[1].tag <= src2a_tag;
-			
-		end // end load_two/load_one
-		else begin
-			valid_instr <= 1'b0;
-			// check for the next spot in the RS whose sources are both valid
+		else if (ROB_bus_trigger && ROB_exception_flush) begin
+			$display("MUL RS: Flushing");
+			// iterate through each of the 4
 			for (int i = 0; i < 4; i++) begin
-				if (res_station[i].src[0].valid && res_station[i].src[1].valid && mul_ready) begin
-					$display("MUL RS: sending values to FU for execution");
-					// set outputs for FU to execute
-					tag_out <= res_station[i].ID;
-					op1 <= res_station[i].src[0].value;
-					op2 <= res_station[i].src[1].value;
-					valid_instr <= 1'b1;
-					
+				// if the tag is greater than the head pointer, flush
+				if (res_station[i].tag_rob > ROB_bus_tag) begin
 					// clear this entry of the RS
 					res_station[i].src[0].valid = 1'b0;
 					res_station[i].src[1].valid = 1'b0;
@@ -161,118 +203,11 @@ module mul_rs (
 					res_station[i].src[1].tag = 3'bz;
 					res_station[i].src[0].value = 32'b0;
 					res_station[i].src[1].value = 32'b0;
-					break;
-				end // end if
+				end
 			end // end for loop
-		end
+		end // end if ROB_bus_trigger
 	
-	end // end always @ clk or bus_trigger
-	
-//	always @(posedge MULbus_trigger) begin
-//		// listen on bus
-//		if (MULbus_trigger) begin
-//			$display("MUL RS: MUL bus update received");
-//			// iterate through each of the 4
-//			// check if a source is invalid and tags match
-//			for (int i = 0; i < 4; i++) begin
-//				if (!res_station[i].src[0].valid && res_station[i].src[0].tag === MULbus_tag) begin
-//					// source 1 matches, set the new value
-//					res_station[i].src[0].value <= MULbus_value;
-//					
-//				end else if (!res_station[i].src[1].valid && res_station[i].src[1].tag === MULbus_tag) begin
-//					// source 2 matches, set the new value
-//					res_station[i].src[1].value <= MULbus_value;
-//					
-//				end // end ifs
-//			end // end for loop
-//		end // end if MULbus_trigger
-//	
-//	end // end always @ MULbus
-//	
-//	always @(posedge ADDbus_trigger) begin
-//		if (ADDbus_trigger) begin
-//			$display("MUL RS: ADD bus update received");
-//			// iterate through each of the 4
-//			// check if a source is invalid and tags match
-//			for (int i = 0; i < 4; i++) begin
-//				if (!res_station[i].src[0].valid && res_station[i].src[0].tag === ADDbus_tag) begin
-//					// source 1 matches, set the new value
-//					res_station[i].src[0].value <= ADDbus_value;
-//					
-//				end else if (!res_station[i].src[1].valid && res_station[i].src[1].tag === ADDbus_tag) begin
-//					// source 2 matches, set the new value
-//					res_station[i].src[1].value <= ADDbus_value;
-//					
-//				end // end ifs
-//			end // end for loop
-//		end // end if ADDbus_trigger
-//	end // end always @ Addbus
-
-	// reading ROB bus logic
-//	always @(posedge ROB_bus_trigger) begin
-//	
-//		if (ROB_bus_trigger) begin
-//			$display("MUL RS: ROB bus update received");
-//			// iterate through each of the 4
-//			// check if a source is invalid and tags match
-//			for (int i = 0; i < 4; i++) begin
-//				if (!res_station[i].src[0].valid && res_station[i].src[0].tag === ROB_bus_tag) begin
-//					// source 1 matches, set the new value
-//					res_station[i].src[0].value <= ROB_bus_value;
-//					
-//				end else if (!res_station[i].src[1].valid && res_station[i].src[1].tag === ROB_bus_tag) begin
-//					// source 2 matches, set the new value
-//					res_station[i].src[1].value <= ROB_bus_value;
-//					
-//				end // end ifs
-//			end // end for loop
-//		end // end if ROB_bus_trigger
-//	
-//	end // end always @ ROB bus trigger
-	
-	// execute logic
-//	always @(posedge clk || ROB_bus_trigger) begin
-//		if (ROB_bus_trigger) begin
-//			$display("MUL RS: ROB bus update received");
-//			// iterate through each of the 4
-//			// check if a source is invalid and tags match
-//			for (int i = 0; i < 4; i++) begin
-//				if (!res_station[i].src[0].valid && res_station[i].src[0].tag === ROB_bus_tag) begin
-//					// source 1 matches, set the new value
-//					res_station[i].src[0].value <= ROB_bus_value;
-//					
-//				end else if (!res_station[i].src[1].valid && res_station[i].src[1].tag === ROB_bus_tag) begin
-//					// source 2 matches, set the new value
-//					res_station[i].src[1].value <= ROB_bus_value;
-//					
-//				end // end ifs
-//			end // end for loop
-//		end // end if ROB_bus_trigger
-//		else begin
-//			valid_instr <= 1'b0;
-//			// check for the next spot in the RS whose sources are both valid
-//			for (int i = 0; i < 4; i++) begin
-//				if (res_station[i].src[0].valid && res_station[i].src[1].valid && mul_ready) begin
-//					$display("MUL RS: sending values to FU for execution");
-//					// set outputs for FU to execute
-//					tag_out <= res_station[i].ID;
-//					op1 <= res_station[i].src[0].value;
-//					op2 <= res_station[i].src[1].value;
-//					valid_instr <= 1'b1;
-//					
-//					// clear this entry of the RS
-//					res_station[i].src[0].valid = 1'b0;
-//					res_station[i].src[1].valid = 1'b0;
-//					res_station[i].src[0].tag = 3'bz;
-//					res_station[i].src[1].tag = 3'bz;
-//					res_station[i].src[0].value = 32'b0;
-//					res_station[i].src[1].value = 32'b0;
-//					break;
-//				end // end if
-//			end // end for loop
-//		end
-//	end // end always @
-	
+	end // end always @ ROB bus trigger
 
 
 endmodule
@@ -307,6 +242,7 @@ module adder_rs (
 	output logic [3:0] avail_IDs, // indicates which ID is available for renaming
 	// input from bus
 	input logic ROB_bus_trigger,
+	input logic ROB_exception_flush,
 	input logic [2:0] ROB_bus_tag,
 	input logic [31:0] ROB_bus_value
 );
@@ -320,6 +256,8 @@ module adder_rs (
 	typedef struct {
 		logic [2:0] ID; // a, b, c, d
 		rs_source src[1:0]; // source 1 and source 2
+		
+		logic [2:0] tag_rob;
 	} rs_line;
 	
 	rs_line res_station[4];
@@ -370,12 +308,83 @@ module adder_rs (
 	// NEED "NEXT AVAILABLE" POINTERS FOR RESERVATION STATION ENTRIES
 	
 	// if a new instruction incoming from Register Alias Table
-	always @(posedge clk || ROB_bus_trigger) begin
+	always @(posedge clk) begin
 		// set the valid, tag, and value fields for each source from the instruction
 		
-		// first, handle bus updates
-		if (ROB_bus_trigger) begin
-			$display("MUL RS: ROB bus update received");
+		if (load_two) begin
+			$display("ADD RS: loading 2 instructions from RAT");
+			// load both a and b stuff
+			res_station[a_index].tag_rob <= a_RSID;
+			// src1a
+			res_station[a_index].src[0].valid <= src1a_valid;		// a_RSID -> a_index
+			res_station[a_index].src[0].value <= src1a_val;
+			res_station[a_index].src[0].tag <= src1a_tag;
+			// src2a
+			res_station[a_index].src[1].valid <= src2a_valid;
+			res_station[a_index].src[1].value <= src2a_val;
+			res_station[a_index].src[1].tag <= src2a_tag;
+			
+			res_station[b_index].tag_rob <= b_RSID;
+			// src1b
+			res_station[b_index].src[0].valid <= src1b_valid;
+			res_station[b_index].src[0].value <= src1b_val;
+			res_station[b_index].src[0].tag <= src1b_tag;
+			// src2b
+			res_station[b_index].src[1].valid <= src2b_valid;
+			res_station[b_index].src[1].value <= src2b_val;
+			res_station[b_index].src[1].tag <= src2b_tag;
+			
+		end else if (load_one) begin
+			$display("ADD RS: loading 1 instruction from RAT.	S1 val: %d	S2 val: %d", src1a_val, src2a_val);
+			// load only a stuff
+			res_station[a_index].tag_rob <= a_RSID;
+			// src1a
+			res_station[a_index].src[0].valid <= src1a_valid;
+			res_station[a_index].src[0].value <= src1a_val;
+			res_station[a_index].src[0].tag <= src1a_tag;
+			// src2a
+			res_station[a_index].src[1].valid <= src2a_valid;
+			res_station[a_index].src[1].value <= src2a_val;
+			res_station[a_index].src[1].tag <= src2a_tag;
+			
+		end // end load_two/load_one
+		else begin
+			//valid_instr <= 1'b0;
+			// check for the next spot in the RS whose sources are both valid
+			for (int i = 0; i < 4; i++) begin
+				//$display("ADD RS: Src0 Valid: %b		Src1 Valid: %b		adder_ready: %b", res_station[i].src[0].valid, res_station[i].src[1].valid, adder_ready);
+				if (res_station[i].src[0].valid && res_station[i].src[1].valid && adder_ready) begin
+					$display("ADD RS: sending values to FU for execution: tag: %d	op1: %d	op2: %d", res_station[i].tag_rob, res_station[i].src[0].value, res_station[i].src[1].value);
+					// set outputs for FU to execute
+					tag_out <= res_station[i].tag_rob;
+					op1 <= res_station[i].src[0].value;
+					op2 <= res_station[i].src[1].value;
+					valid_instr <= 1'b1;
+					
+					// clear this entry of the RS
+					res_station[i].src[0].valid = 1'b0;
+					res_station[i].src[1].valid = 1'b0;
+					res_station[i].src[0].tag = 3'bz;
+					res_station[i].src[1].tag = 3'bz;
+					res_station[i].src[0].value = 32'b0;
+					res_station[i].src[1].value = 32'b0;
+					break;
+				end else if (i == 3) begin	// reached last entry of RS
+					valid_instr <= 1'b0;
+				
+				end
+
+			end // end for loop
+
+		end
+	end // end always @ clk or bus_trigger
+	
+	
+	// reading ROB bus logic
+	always @(posedge ROB_bus_trigger) begin
+	
+		if (ROB_bus_trigger && !ROB_exception_flush) begin
+			$display("ADD RS: ROB bus update received");
 			// iterate through each of the 4
 			// check if a source is invalid and tags match
 			for (int i = 0; i < 4; i++) begin
@@ -390,53 +399,12 @@ module adder_rs (
 				end // end ifs
 			end // end for loop
 		end // end if ROB_bus_trigger
-		else if (load_two) begin
-			$display("ADD RS: loading 2 instructions from RAT");
-			// load both a and b stuff
-			// src1a
-			res_station[a_index].src[0].valid <= src1a_valid;		// a_RSID -> a_index
-			res_station[a_index].src[0].value <= src1a_val;
-			res_station[a_index].src[0].tag <= src1a_tag;
-			// src2a
-			res_station[a_index].src[1].valid <= src2a_valid;
-			res_station[a_index].src[1].value <= src2a_val;
-			res_station[a_index].src[1].tag <= src2a_tag;
-			
-			// src1b
-			res_station[b_RSID[1:0]].src[0].valid <= src1b_valid;
-			res_station[b_RSID[1:0]].src[0].value <= src1b_val;
-			res_station[b_RSID[1:0]].src[0].tag <= src1b_tag;
-			// src2b
-			res_station[b_RSID[1:0]].src[1].valid <= src2b_valid;
-			res_station[b_RSID[1:0]].src[1].value <= src2b_val;
-			res_station[b_RSID[1:0]].src[1].tag <= src2b_tag;
-			
-		end else if (load_one) begin
-			$display("ADD RS: loading 1 instruction from RAT");
-			// load only a stuff
-			// src1a
-			res_station[a_index].src[0].valid <= src1a_valid;
-			res_station[a_index].src[0].value <= src1a_val;
-			res_station[a_index].src[0].tag <= src1a_tag;
-			// src2a
-			res_station[a_index].src[1].valid <= src2a_valid;
-			res_station[a_index].src[1].value <= src2a_val;
-			res_station[a_index].src[1].tag <= src2a_tag;
-			
-		end // end load_two/load_one
-		else begin
-			valid_instr <= 1'b0;
-			// check for the next spot in the RS whose sources are both valid
+		else if (ROB_bus_trigger && ROB_exception_flush) begin
+			$display("ADD RS: Flushing");
+			// iterate through each of the 4
 			for (int i = 0; i < 4; i++) begin
-				//$display("ADD RS: Src0 Valid: %b		Src1 Valid: %b		adder_ready: %b", res_station[i].src[0].valid, res_station[i].src[1].valid, adder_ready);
-				if (res_station[i].src[0].valid && res_station[i].src[1].valid && adder_ready) begin
-					$display("ADD RS: sending values to FU for execution");
-					// set outputs for FU to execute
-					tag_out <= res_station[i].ID;
-					op1 <= res_station[i].src[0].value;
-					op2 <= res_station[i].src[1].value;
-					valid_instr <= 1'b1;
-					
+				// if the tag is greater than the head pointer, flush
+				if (res_station[i].tag_rob > ROB_bus_tag) begin
 					// clear this entry of the RS
 					res_station[i].src[0].valid = 1'b0;
 					res_station[i].src[1].valid = 1'b0;
@@ -444,118 +412,10 @@ module adder_rs (
 					res_station[i].src[1].tag = 3'bz;
 					res_station[i].src[0].value = 32'b0;
 					res_station[i].src[1].value = 32'b0;
-					break;
 				end
-
 			end // end for loop
-		end
-	end // end always @ clk or bus_trigger
+		end // end if ROB_bus_trigger
 	
-//	always @(posedge MULbus_trigger) begin
-//		// listen on bus
-//		if (MULbus_trigger) begin
-//			$display("ADD RS: MUL bus update received");
-//			// iterate through each of the 4
-//			// check if a source is invalid and tags match
-//			for (int i = 0; i < 4; i++) begin
-//				if (!res_station[i].src[0].valid && res_station[i].src[0].tag === MULbus_tag) begin
-//					// source 1 matches, set the new value
-//					res_station[i].src[0].value <= MULbus_value;
-//					
-//				end else if (!res_station[i].src[1].valid && res_station[i].src[1].tag === MULbus_tag) begin
-//					// source 2 matches, set the new value
-//					res_station[i].src[1].value <= MULbus_value;
-//					
-//				end // end ifs
-//			end // end for loop
-//		end // end if MULbus_trigger
-//	
-//	end // end always @ MULbus
-//	
-//	always @(posedge ADDbus_trigger) begin
-//		if (ADDbus_trigger) begin
-//			$display("ADD RS: ADD bus update received");
-//			// iterate through each of the 4
-//			// check if a source is invalid and tags match
-//			for (int i = 0; i < 4; i++) begin
-//				if (!res_station[i].src[0].valid && res_station[i].src[0].tag === ADDbus_tag) begin
-//					// source 1 matches, set the new value
-//					res_station[i].src[0].value <= ADDbus_value;
-//					
-//				end else if (!res_station[i].src[1].valid && res_station[i].src[1].tag === ADDbus_tag) begin
-//					// source 2 matches, set the new value
-//					res_station[i].src[1].value <= ADDbus_value;
-//					
-//				end // end ifs
-//			end // end for loop
-//		end // end if ADDbus_trigger
-//	end // end always @ Addbus
-	
-	// reading ROB bus logic
-//	always @(posedge ROB_bus_trigger) begin
-//	
-//		if (ROB_bus_trigger) begin
-//			$display("MUL RS: ROB bus update received");
-//			// iterate through each of the 4
-//			// check if a source is invalid and tags match
-//			for (int i = 0; i < 4; i++) begin
-//				if (!res_station[i].src[0].valid && res_station[i].src[0].tag === ROB_bus_tag) begin
-//					// source 1 matches, set the new value
-//					res_station[i].src[0].value <= ROB_bus_value;
-//					
-//				end else if (!res_station[i].src[1].valid && res_station[i].src[1].tag === ROB_bus_tag) begin
-//					// source 2 matches, set the new value
-//					res_station[i].src[1].value <= ROB_bus_value;
-//					
-//				end // end ifs
-//			end // end for loop
-//		end // end if ROB_bus_trigger
-//	
-//	end // end always @ ROB bus trigger
-	
-	// execute logic
-//	always @(posedge clk || ROB_bus_trigger) begin
-//		if (ROB_bus_trigger) begin
-//			$display("MUL RS: ROB bus update received");
-//			// iterate through each of the 4
-//			// check if a source is invalid and tags match
-//			for (int i = 0; i < 4; i++) begin
-//				if (!res_station[i].src[0].valid && res_station[i].src[0].tag === ROB_bus_tag) begin
-//					// source 1 matches, set the new value
-//					res_station[i].src[0].value <= ROB_bus_value;
-//					
-//				end else if (!res_station[i].src[1].valid && res_station[i].src[1].tag === ROB_bus_tag) begin
-//					// source 2 matches, set the new value
-//					res_station[i].src[1].value <= ROB_bus_value;
-//					
-//				end // end ifs
-//			end // end for loop
-//		end // end if ROB_bus_trigger
-//		else begin
-//			valid_instr <= 1'b0;
-//			// check for the next spot in the RS whose sources are both valid
-//			for (int i = 0; i < 4; i++) begin
-//				//$display("ADD RS: Src0 Valid: %b		Src1 Valid: %b		adder_ready: %b", res_station[i].src[0].valid, res_station[i].src[1].valid, adder_ready);
-//				if (res_station[i].src[0].valid && res_station[i].src[1].valid && adder_ready) begin
-//					$display("ADD RS: sending values to FU for execution");
-//					// set outputs for FU to execute
-//					tag_out <= res_station[i].ID;
-//					op1 <= res_station[i].src[0].value;
-//					op2 <= res_station[i].src[1].value;
-//					valid_instr <= 1'b1;
-//					
-//					// clear this entry of the RS
-//					res_station[i].src[0].valid = 1'b0;
-//					res_station[i].src[1].valid = 1'b0;
-//					res_station[i].src[0].tag = 3'bz;
-//					res_station[i].src[1].tag = 3'bz;
-//					res_station[i].src[0].value = 32'b0;
-//					res_station[i].src[1].value = 32'b0;
-//					break;
-//				end
-//
-//			end // end for loop
-//		end
-//	end // end always @
+	end // end always @ ROB bus trigger
 
 endmodule
